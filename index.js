@@ -2,14 +2,16 @@
 
 var through = require('through2').obj;
 var path = require('path');
-var checker = require('istanbul-threshold-checker');
+var checker = {};
 // Make sure istanbul is `require`d after the istanbul-threshold-checker to use the istanbul version
 // defined in this package.json instead of the one defined in istanbul-threshold-checker.
-var istanbul = require('istanbul');
+var istanbulInstrument = require('istanbul-lib-instrument');
+var istanbulHook = require('istanbul-lib-hook');
+var istanbulCoverage = require('istanbul-lib-coverage');
 var _ = require('lodash');
 var applySourceMap = require('vinyl-sourcemaps-apply');
-var Report = istanbul.Report;
-var Collector = istanbul.Collector;
+var Collector = {};
+var Report = {};
 var PluginError = require('plugin-error');
 
 var PLUGIN_NAME = 'gulp-istanbul';
@@ -23,9 +25,12 @@ var plugin = module.exports = function (opts) {
   opts = opts || {};
   _.defaults(opts, {
     coverageVariable: COVERAGE_VARIABLE,
-    instrumenter: istanbul.Instrumenter
+    instrumenter: istanbulInstrument.createInstrumenter
   });
   opts.includeUntested = opts.includeUntested === true;
+  if(!global[opts.coverageVariable]) {
+    global[opts.coverageVariable] = istanbulCoverage.createCoverageMap();
+  }
 
   return through(function (file, enc, cb) {
     var fileContents = file.contents.toString();
@@ -33,16 +38,10 @@ var plugin = module.exports = function (opts) {
 
     if (file.sourceMap) {
       fileOpts = _.defaultsDeep(fileOpts, {
-        codeGenerationOptions: {
-          sourceMap: file.sourceMap.file,
-          sourceMapWithCode: true,
-          sourceContent: fileContents,
-          sourceMapRoot: file.sourceMap.sourceRoot,
-          file: normalizePathSep(file.path)
-        }
+        produceSourceMap: true,
       });
     }
-    var instrumenter = new opts.instrumenter(fileOpts);
+    var instrumenter = opts.instrumenter(fileOpts);
 
     cb = _.once(cb);
     if (!(file.contents instanceof Buffer)) {
@@ -57,10 +56,19 @@ var plugin = module.exports = function (opts) {
           'Unable to parse ' + filepath + '\n\n' + err.message + '\n'
         ));
       }
-
+      var coverage = istanbulCoverage.createFileCoverage(
+        instrumenter.lastFileCoverage()
+      );
+      global[opts.coverageVariable].addFileCoverage(coverage);
       var sourceMap = instrumenter.lastSourceMap();
       if (sourceMap !== null) {
-          applySourceMap(file, sourceMap.toString());
+        if (!sourceMap.file) {
+          sourceMap.file = file.sourceMap.file;
+        }
+        if (!sourceMap.sourceRoot) {
+          sourceMap.sourceRoot = file.sourceMap.sourceRoot;
+        }
+        applySourceMap(file, sourceMap);
       }
 
       file.contents = new Buffer(code);
@@ -75,25 +83,28 @@ var plugin = module.exports = function (opts) {
         var covStubMatch = covStubRE.exec(instrumentedSrc);
         if (covStubMatch !== null) {
           var covStub = JSON.parse(covStubMatch[0]);
-          global[opts.coverageVariable] = global[opts.coverageVariable] || {};
-          global[opts.coverageVariable][path.resolve(filepath)] = covStub;
+          var fileCovStub = istanbulCoverage.createFileCoverage(covStub);
+          global[opts.coverageVariable].addFileCoverage(fileCovStub);
         }
       }
 
       return cb(err, file);
-    });
+    }, file.sourceMap);
   });
 };
 
 plugin.hookRequire = function (options) {
   var fileMap = {};
-
-  istanbul.hook.unhookRequire();
-  istanbul.hook.hookRequire(function (path) {
-    return !!fileMap[normalizePathSep(path)];
-  }, function (code, path) {
-    return fileMap[normalizePathSep(path)];
-  }, options);
+  if (plugin.unhookRequire) {
+    plugin.unhookRequire();
+  }
+  plugin.unhookRequire = istanbulHook.hookRequire(
+    function (path) {
+      return !!fileMap[normalizePathSep(path)];
+    }, function (code, path) {
+      return fileMap[normalizePathSep(path)];
+    }, options
+  );
 
   return through(function (file, enc, cb) {
     // If the file is already required, delete it from the cache otherwise the covered
@@ -110,9 +121,9 @@ plugin.summarizeCoverage = function (opts) {
 
   if (!global[opts.coverageVariable]) throw new Error('no coverage data found, run tests before calling `summarizeCoverage`');
 
-  var collector = new Collector();
-  collector.add(global[opts.coverageVariable]);
-  return istanbul.utils.summarizeCoverage(collector.getFinalCoverage());
+  var summary = global[opts.coverageVariable];
+
+  return summary.getCoverageSummary().toJSON();
 };
 
 plugin.writeReports = function (opts) {

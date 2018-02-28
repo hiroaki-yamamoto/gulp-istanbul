@@ -38,7 +38,7 @@ describe('gulp-istanbul', function () {
     it('instrument files', function (done) {
       this.stream.on('data', function (file) {
         assert.equal(file.path, libFile.path);
-        assert(file.contents.toString().indexOf('__cov_') >= 0);
+        assert(file.contents.toString().indexOf('cov_') >= 0);
         assert(file.contents.toString().indexOf('$$cov_') >= 0);
         done();
       });
@@ -84,7 +84,10 @@ describe('gulp-istanbul', function () {
       var sourceMapStream = initStream.pipe(this.stream);
       sourceMapStream.on('data', function (file) {
         assert(file.sourceMap !== undefined);
-        assert.equal(file.sourceMap.file, file.path.replace(/\\/g, '/'));
+        assert.equal(
+          file.sourceMap.file,
+          path.basename(file.path.replace(/\\/g, '/'))
+        );
         done();
       });
 
@@ -97,7 +100,8 @@ describe('gulp-istanbul', function () {
         var sourceMapStream = initStream.pipe(this.stream);
         sourceMapStream.on('data', function (file) {
           assert.equal(file.sourceMap.sourceRoot, 'testSourceRoot');
-          assert(file.sourceMap.sources.indexOf('testInputFile.js') >= 0);
+          assert.equal(file.sourceMap.file, 'testInputFile.js');
+          assert(file.sourceMap.mappings !== undefined);
           done();
         });
 
@@ -128,7 +132,9 @@ describe('gulp-istanbul', function () {
   describe('istanbul() with custom instrumentor', function() {
     beforeEach(function () {
       this.stream = istanbul({
-        instrumentor: isparta.Instrumentor
+        instrumenter: function (opts) {
+          return new isparta.Instrumenter(opts);
+        }
       });
     });
 
@@ -167,12 +173,13 @@ describe('gulp-istanbul', function () {
         .pipe(istanbul())
         .pipe(istanbul.hookRequire())
         .on('finish', function () {
-          process.stdout.write = function () {};
+          // process.stdout.write = function () {};
           gulp.src([ 'test/fixtures/test/*.js' ])
             .pipe(mocha())
+            .on('data', function () {})
             .on('end', function () {
               var data = istanbul.summarizeCoverage();
-              process.stdout.write = out;
+              // process.stdout.write = out;
               assert.equal(data.lines.pct, 75);
               assert.equal(data.statements.pct, 75);
               assert.equal(data.functions.pct, 50);
